@@ -1,0 +1,2 @@
+0
+4017 26760490 1751742149752160604 a863bf67fbd0383944ffa9868d8ed7b8 3 p/raylib-5.5.0-whq8uD5vNgTZuPxlPnpXmRPWLmCC2uRBhwreIxeV0G49/src/external/glfw/deps/wayland/idle-inhibit-unstable-v1.xml
