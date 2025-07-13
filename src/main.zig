@@ -1,4 +1,5 @@
 const rl = @cImport({
+    @cDefine("GRAPHICS_API_OPENGL_11", {});
     @cInclude("raylib.h");
     @cInclude("rlgl.h");
 });
@@ -8,10 +9,8 @@ const math = @import("std").math;
 
 const FRAMERATE: i64 = 30;
 const STEP: f64 = 1.0 / @as(f64, FRAMERATE);
-const RESOLUTION: i64 = 256;
-const WINDOW_WIDTH: i64 = 1280;
-const WINDOW_HEIGHT: i64 = 720;
-const INVALID_SHADER_ID: u64 = 9999999;
+const WINDOW_WIDTH: i64 = 600;
+const WINDOW_HEIGHT: i64 = 600;
 
 const STATE = enum {
     OPEN_FILE,
@@ -61,11 +60,27 @@ const REPEAT_FRAGMENT_SHADER_CODE =
 \\}
 ;
 
+const ColorString = struct {color: rl.struct_Color, str: []const u8};
+
+const testing = @import("std").testing;
+pub fn WrapI(val: i64, min: i64, max: i64) i64 {
+    return val - @divFloor(val - min, max - min) * (max - min);
+}
+test "wrap negative" {
+    try testing.expect(WrapI(-2, 1, 7) == 4);
+}
+test "warp positive" {
+    try testing.expect(WrapI(9, 2, 6) == 5);
+}
+test "warp negative minmax" {
+    try testing.expect(WrapI(-8, -7, -2) == -3);
+}
 pub fn UnloadShaderSafe(sh: rl.struct_Shader) void {
     if (sh.locs != null) {
         rl.UnloadShader(sh);
     }
 }
+
 pub fn UnloadRenderTextureSafe(rt: rl.struct_RenderTexture) void {
     if (rt.id != 0) {
         rl.UnloadRenderTexture(rt);
@@ -77,10 +92,45 @@ pub fn UnloadImageSafe(img: rl.struct_Image) void {
     }
 }
 
+pub fn DrawTextList(list: []const ColorString, x: i32, y: i32, w: i32, sep: i32, pad: i32, inset: i32) void {
+    const fontSize: i32 = @intCast(28);
+    for (list, 0..) |item, ind| {
+        const i: i32 = @intCast(ind);
+        const dy: i32 = y + sep * i + pad * i;
+        const cstr: [*c]const u8 = @ptrCast(item.str);
+        rl.DrawRectangle(x, dy, w, sep, rl.struct_Color{.r = 0, .g = 0, .b = 0, .a = 128});
+        rl.DrawText(cstr, x + 1 + inset, dy + 1 + inset, fontSize, rl.BLACK);
+        rl.DrawText(cstr, x + inset, dy + inset, fontSize, item.color);
+        rl.DrawRectangleLines(x, dy, w, sep, rl.WHITE);
+    }
+}
+
 pub fn SetRepeatShaderUniforms(sh: rl.struct_Shader, repeatStart: rl.struct_Vector2) void {
     rl.SetShaderValue(sh, rl.GetShaderLocation(sh, "repeatBegin"), &repeatStart, rl.SHADER_UNIFORM_VEC2);
     const scale: f32 = 1.0;
     rl.SetShaderValue(sh, rl.GetShaderLocation(sh, "_internal_scale"), &scale, rl.SHADER_UNIFORM_FLOAT);
+}
+
+pub fn RenderTexture(shd: rl.struct_Shader, tex: rl.struct_RenderTexture) void {
+    rl.BeginTextureMode(tex);
+    rl.BeginShaderMode(shd);
+    defer rl.EndShaderMode();
+    const resolution = [_]f32{
+        @as(f32, @floatFromInt(tex.texture.width)),
+        @as(f32, @floatFromInt(tex.texture.height)) };
+    rl.SetShaderValue(
+        shd,
+        rl.GetShaderLocation(shd, "resolution"),
+        &resolution,
+        rl.SHADER_UNIFORM_VEC2);
+    const scale: f32 = 2.0;
+    rl.SetShaderValue(
+        shd,
+        rl.GetShaderLocation(shd, "_internal_scale"),
+        &scale,
+        rl.SHADER_UNIFORM_FLOAT);
+    rl.DrawRectangle(0, 0, tex.texture.width, tex.texture.height, rl.WHITE);
+    rl.EndTextureMode();
 }
 
 const Transform = struct { padding: i64, position: rl.struct_Vector2, rotation: f32, scale: f32 };
@@ -99,22 +149,33 @@ pub fn RlCreateRenderTextureUndefined() rl.struct_RenderTexture {
 }
 
 pub fn main() !void {
+    rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Generate repeating texture");
     defer rl.CloseWindow();
     rl.SetTargetFPS(FRAMERATE);
 
-    var state = STATE.OPEN_FILE;
-    var noiseShader = rl.struct_Shader{ .id = 0, .locs = null };
-    defer UnloadShaderSafe(noiseShader);
-    const noiseTexture = rl.LoadRenderTexture(RESOLUTION * 2, RESOLUTION * 2);
+
+    var textureSizeOptionStrings = [_]ColorString{
+        ColorString{.color = rl.WHITE, .str = "x32"},
+        ColorString{.color = rl.WHITE, .str = "x64"},
+        ColorString{.color = rl.WHITE, .str = "x128"},
+        ColorString{.color = rl.WHITE, .str = "x256"},
+        ColorString{.color = rl.WHITE, .str = "x512"},
+        ColorString{.color = rl.WHITE, .str = "x1024"},
+        ColorString{.color = rl.WHITE, .str = "x2048"}
+    };
+    var textureSizeOptionIndex : usize = 2;
+    const textureSizeOptions = [_]i32{32, 64, 128, 256, 512, 1024, 2048};
+    const textureSizeOptionInset : i64 = 2;
+    textureSizeOptionStrings[textureSizeOptionIndex].color = rl.YELLOW;
+
+    var noiseTexture = rl.LoadRenderTexture(
+        textureSizeOptions[textureSizeOptionIndex] * 2,
+        textureSizeOptions[textureSizeOptionIndex] * 2);
+    var noiseShaderCompiled = false;
     defer UnloadRenderTextureSafe(noiseTexture);
-    var noiseImage = rl.struct_Image{
-        .data = null,
-        .format = 0,
-        .height = 0,
-        .width = 0,
-        .mipmaps = 0 };
-    defer UnloadImageSafe(noiseImage);
+    var noiseShader = rl.struct_Shader{.id = rl.rlGetShaderIdDefault(), .locs = rl.rlGetShaderLocsDefault()};
+    defer UnloadShaderSafe(noiseShader);
     var noiseTextureTransform = Transform{
         .padding = 0,
         .position = rl.struct_Vector2{ .x = 0.0, .y = 0.0 },
@@ -125,70 +186,76 @@ pub fn main() !void {
     const repeatShader = rl.LoadShaderFromMemory(VERTEX_SHADER_CODE, REPEAT_FRAGMENT_SHADER_CODE);
     const repeatStart = rl.struct_Vector2{.x = 0.78, .y = 0.78};
 
+
     while (!rl.WindowShouldClose()) {
         rl.BeginDrawing();
         defer rl.EndDrawing();
         rl.ClearBackground(rl.BLACK);
-        switch (state) {
-            STATE.OPEN_FILE => {
-                if (rl.IsFileDropped()) {
-                    const files = rl.LoadDroppedFiles();
-                    defer rl.UnloadDroppedFiles(files);
-                    const fragmentCode = rl.LoadFileText(files.paths[0]);
-                    defer rl.UnloadFileText(fragmentCode);
-                    noiseShader = rl.LoadShaderFromMemory(VERTEX_SHADER_CODE, fragmentCode);
-                    if (noiseShader.locs != null) {
-                        rl.BeginTextureMode(noiseTexture);
-                        rl.BeginShaderMode(noiseShader);
-                        defer rl.EndShaderMode();
-                        const resolution = [_]f32{
-                            @as(f32, @floatFromInt(noiseTexture.texture.width)),
-                            @as(f32, @floatFromInt(noiseTexture.texture.height)) };
-                        rl.SetShaderValue(
-                            noiseShader,
-                            rl.GetShaderLocation(noiseShader, "resolution"),
-                            &resolution,
-                            rl.SHADER_UNIFORM_VEC2);
-                        const scale: f32 = 2.0;
-                        rl.SetShaderValue(
-                            noiseShader,
-                            rl.GetShaderLocation(noiseShader, "_internal_scale"),
-                            &scale,
-                            rl.SHADER_UNIFORM_FLOAT);
-                        rl.DrawRectangle(0, 0, noiseTexture.texture.width, noiseTexture.texture.height, rl.WHITE);
-                        noiseTextureTransform = UpdateTransform(padding, noiseTexture.texture, WINDOW_WIDTH, WINDOW_HEIGHT);
-                        state = STATE.VIEW;
-                        rl.EndTextureMode();
-                        noiseImage = rl.LoadImageFromTexture(noiseTexture.texture);
-                    }
-                }
-            },
-            STATE.VIEW => {
-                rl.BeginShaderMode(repeatShader);
-                SetRepeatShaderUniforms(repeatShader, repeatStart);
-                rl.DrawTextureEx(
-                    noiseTexture.texture,
-                    noiseTextureTransform.position,
-                    noiseTextureTransform.rotation,
-                    noiseTextureTransform.scale,
-                    rl.WHITE);
-                rl.EndShaderMode();
 
-                if (rl.IsKeyPressed(rl.KEY_S)) {
-                    const repeatTexture = rl.LoadRenderTexture(RESOLUTION, RESOLUTION);
-                    defer rl.UnloadRenderTexture(repeatTexture);
-                    rl.BeginTextureMode(repeatTexture);
-                    rl.BeginShaderMode(repeatShader);
-                    const pos = rl.struct_Vector2{.x = 0.0, .y = 0.0};
-                    rl.DrawTextureEx(noiseTexture.texture, pos, @as(f32, 0.0), @as(f32, 0.5), rl.WHITE);
-                    rl.EndShaderMode();
-                    rl.EndTextureMode();
+        if (!noiseShaderCompiled) {
+            rl.DrawText("Drop fragment shader\nfile into the window", 8, 8, 32, rl.RAYWHITE);
+        }
 
-                    const repeatImage = rl.LoadImageFromTexture(repeatTexture.texture);
-                    defer rl.UnloadImage(repeatImage);
-                    _ = rl.ExportImage(repeatImage, "out.png");
-                }
-            },
+        if (rl.IsFileDropped()) {
+            const files = rl.LoadDroppedFiles();
+            defer rl.UnloadDroppedFiles(files);
+            const fragmentCode = rl.LoadFileText(files.paths[0]);
+            defer rl.UnloadFileText(fragmentCode);
+
+            if (noiseShader.id != 0) {
+                rl.UnloadShader(noiseShader);
+            }
+            noiseShader = rl.LoadShaderFromMemory(VERTEX_SHADER_CODE, fragmentCode);
+
+            if (noiseShader.id != 0) {
+                RenderTexture(noiseShader, noiseTexture);
+                noiseShaderCompiled = true;
+            }
+        }
+
+        if (!noiseShaderCompiled) {continue;}
+
+        noiseTextureTransform = UpdateTransform(padding, noiseTexture.texture, rl.GetRenderWidth(), rl.GetRenderHeight());
+        rl.BeginShaderMode(repeatShader);
+        SetRepeatShaderUniforms(repeatShader, repeatStart);
+        rl.DrawTextureEx(
+            noiseTexture.texture,
+            noiseTextureTransform.position,
+            noiseTextureTransform.rotation,
+            noiseTextureTransform.scale,
+            rl.WHITE);
+        rl.EndShaderMode();
+
+        if (rl.IsKeyPressed(rl.KEY_UP) or rl.IsKeyPressed(rl.KEY_DOWN)) {
+            textureSizeOptionStrings[textureSizeOptionIndex].color = rl.WHITE;
+            const up = rl.IsKeyPressed(rl.KEY_UP);
+            const down = rl.IsKeyPressed(rl.KEY_DOWN);
+            const dir = @as(i64, @intFromBool(down)) - @as(i64, @intFromBool(up));
+            const ind = @as(i64, @intCast(textureSizeOptionIndex));
+            textureSizeOptionIndex = @as(u64, @intCast(WrapI(ind + dir, 0, textureSizeOptionStrings.len)));
+            textureSizeOptionStrings[textureSizeOptionIndex].color = rl.YELLOW;
+
+            const res = textureSizeOptions[textureSizeOptionIndex];
+            rl.UnloadRenderTexture(noiseTexture);
+            noiseTexture = rl.LoadRenderTexture(res * 2, res * 2);
+            RenderTexture(noiseShader, noiseTexture);
+        }
+        DrawTextList(textureSizeOptionStrings[0..], @as(i32, 8), @as(i32, 8), @as(i32, 90), @as(i32, 32), @as(i32, 4), @as(i32, @intCast(textureSizeOptionInset)));
+
+        if (rl.IsKeyPressed(rl.KEY_S)) {
+            const res = textureSizeOptions[textureSizeOptionIndex];
+            const repeatTexture = rl.LoadRenderTexture(res, res);
+            defer rl.UnloadRenderTexture(repeatTexture);
+            rl.BeginTextureMode(repeatTexture);
+            rl.BeginShaderMode(repeatShader);
+            const pos = rl.struct_Vector2{.x = 0.0, .y = 0.0};
+            rl.DrawTextureEx(noiseTexture.texture, pos, @as(f32, 0.0), @as(f32, 0.5), rl.WHITE);
+            rl.EndShaderMode();
+            rl.EndTextureMode();
+
+            const repeatImage = rl.LoadImageFromTexture(repeatTexture.texture);
+            defer rl.UnloadImage(repeatImage);
+            _ = rl.ExportImage(repeatImage, "out.png");
         }
     }
 }
